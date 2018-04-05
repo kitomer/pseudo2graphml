@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# conversts pseudo code to .dot and that to .graphml
+# converts pseudo code to .dot and that to .graphml
 # (open that in yEd then auto-layout it using "flowchart" mode)
 
 use strict;
@@ -20,12 +20,11 @@ if( open( my $fh, '<'.$pseudofile ) )
     my @lines = <$fh>;
 
     # find labeled nodes in first run
-    my %named; # <label> => <node-num>
+    my %labels; # <label> => <node-id>
 
     # first run to transform lines into list of elements
     my @elems;
     my $l = 0; # line number
-    my $n = 0; # node number
     foreach my $line ( @lines )
     {
         $l++;
@@ -33,194 +32,278 @@ if( open( my $fh, '<'.$pseudofile ) )
         $line =~ s/[\s\t\n\r]*$//g;
         next unless length $line;
         #print "{$line}\n";
-        my( $kind, $title, $label, $links ) = parse_line( $line, $n, \%named );
+        my( $kind, $title, $label, $links ) = parse_line( $line, $l, \%labels );
         die "unknown syntax in line $l: $line\n" if $kind eq '';
-        push @elems, {  'kind' => $kind, 'num' => $n, 'title' => $title, 'label' => $label, 
+        push @elems, {  'kind' => $kind, 'id' => mkid(), 'title' => $title, 'label' => $label, 
                         'links' => $links, 'line' => $line, 'linenum' => $l };
-        $n++;
     }
-    
-    # second run for transforming and/or creating implicit nodes
-    
-    # add start node if not present
-    if( scalar @elems ) {
-        if( $elems[0]->{'kind'} ne 'start' ) {
-            push @elems, {  'kind' => 'start', 'num' => $n, 'title' => 'start', 'label' => '', 
-                            'links' => [], 'line' => '', 'linenum' => -1 };
-            $n++;
-        }
-    }
-    my @elems_transformed;
-    my $label = 1; # unique label
-    my $e = 0;
-    for( my $e = 0; $e < scalar @elems; $e++ )
-    {
-        my $elem = $elems[$e];
-        if( $elem->{'kind'} eq 'elsend' ) {
 
-#            if( $e < scalar @elems - 1 ) {
-#                my $next = $elems[$e+1];
-#                push @elems_transformed, {  'kind' => 'else', 'num' => $n, 'title' => '', 'label' => '', 
-#                                            'links' => [], 'line' => '', 'linenum' => -1 };
-#                $n++;
-#                unless( length $next->{'label'} ) {
-#                    $next->{'label'} = 'unique-'.$label;
-#                    $named{$next->{'label'}} = $next->{'num'};
-#                    $label ++;
-#                }
-#                push @elems_transformed, {  'kind' => 'noop', 'num' => $n, 'title' => '', 'label' => '', 
-#                                            'links' => [ $next->{'label'} ], 'line' => '', 'linenum' => -1 };
-#                $n++;
-#                push @elems_transformed, {  'kind' => 'end', 'num' => $n, 'title' => '', 'label' => '', 
-#                                            'links' => [], 'line' => '', 'linenum' => -1 };
-#                $n++;
-#            }
-        
-            push @elems_transformed, {  'kind' => 'else', 'num' => $n, 'title' => '', 'label' => '', 
-                                        'links' => [], 'line' => '', 'linenum' => -1 };
-            $n++;
-            push @elems_transformed, {  'kind' => 'noop', 'num' => $n, 'title' => '', 'label' => '', 
-                                        'links' => [ 'unique-'.$label ], 'line' => '', 'linenum' => -1 };
-            $n++;
-            push @elems_transformed, {  'kind' => 'end', 'num' => $n, 'title' => '', 'label' => '', 
-                                        'links' => [], 'line' => '', 'linenum' => -1 };
-            $n++;
-            push @elems_transformed, {  'kind' => 'noop', 'num' => $n, 'title' => '', 'label' => 'unique-'.$label, 
-                                        'links' => [], 'line' => '', 'linenum' => -1 };
-            $named{'unique-'.$label} = $n;
-            $n++;
-            $label ++;
-        }
-        else {
-            push @elems_transformed, $elem;
-        }
-    }
-    #print Dumper(\@elems_transformed);
+    # turn list of elements into deep tree structure
+    my $tree = parse( \@elems );
+    #dump_tree($tree);
     #die;
-    
-    # third run for creating nodes and edges
-    my @stack; # elem: [ <block-start-node>, <0=start,1=if,2=else>, <prev-node> ]
-    my @Nodes;
-    my @Edges;
-    foreach my $elem ( @elems_transformed )
-    {
-        if( $elem->{'kind'} eq 'start' ) {
-            @stack = ();
-            push @stack, [ $elem->{'num'}, 0, $elem->{'num'} ];
-            push @Nodes, node( $elem->{'num'}, $elem->{'title'}, 'ellipse' );
-        }
-        elsif( $elem->{'kind'} eq 'if' ) {
-            push @Nodes, node( $elem->{'num'}, $elem->{'title'}, 'diamond' );
-            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-            $stack[-1]->[1] = 0 if length $edgelabel;
-            push @Edges, edge( $stack[-1]->[2], $elem->{'num'}, $edgelabel );
-            push @stack, [ $elem->{'num'}, 1, $elem->{'num'} ];
-        }
-        elsif( $elem->{'kind'} eq 'else' ) {
-            my $if_start_node = $stack[-1]->[0];
-            pop @stack;
-            push @stack, [ $elem->{'num'}, 2, $if_start_node ];
-        }
-        elsif( $elem->{'kind'} eq 'end' ) {
-            # BUG: stuff after the "end" is connected to the wrong node...
-            pop @stack;
-        }
-#        elsif( $elem->{'kind'} eq 'goto' ) {
-#            my( $label ) = $line =~ /^goto[\s\t]*\#([0-9a-zA-Z\-\_]+)$/;
-#            die "unknown label $label at line $l\n" unless exists $named{$label};
-#            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-#            $stack[-1]->[1] = 0 if length $edgelabel;
-#            edge( $stack[-1]->[2], $named{$label}, $edgelabel );
-#            $stack[-1]->[2] = undef;
-#        }
-        elsif( $elem->{'kind'} eq 'error' ) {
-            push @Nodes, node( $elem->{'num'}, $elem->{'title'}, 'ellipse' );
-            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-            $stack[-1]->[1] = 0 if length $edgelabel;
-            push @Edges, edge( $stack[-1]->[2], $elem->{'num'}, $edgelabel );
-            $stack[-1]->[2] = undef;
-        }
-        elsif( $elem->{'kind'} eq 'success' ) {
-            push @Nodes, node( $elem->{'num'}, $elem->{'title'}, 'ellipse' );
-            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-            $stack[-1]->[1] = 0 if length $edgelabel;
-            push @Edges, edge( $stack[-1]->[2], $elem->{'num'}, $edgelabel );
-            $stack[-1]->[2] = undef;
-        }
-        elsif( $elem->{'kind'} eq 'step' ) {
-            push @Nodes, node( $elem->{'num'}, $elem->{'title'}, );
-            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-            $stack[-1]->[1] = 0 if length $edgelabel;
-            push @Edges, edge( $stack[-1]->[2], $elem->{'num'}, $edgelabel );
-            $stack[-1]->[2] = $elem->{'num'};
-        }
-        elsif( $elem->{'kind'} eq 'noop' ) {
-            push @Nodes, node( $elem->{'num'}, '', 'ellipse' );
-            my $edgelabel = ( $stack[-1]->[1] == 1 ? $True : ( $stack[-1]->[1] == 2 ? $False : '' ) );
-            $stack[-1]->[1] = 0 if length $edgelabel;
-            push @Edges, edge( $stack[-1]->[2], $elem->{'num'}, $edgelabel );
-            $stack[-1]->[2] = $elem->{'num'};
-        }
-        
-        foreach my $to_label ( @{$elem->{'links'}} ) {
-            die "unknown label ".$to_label."\n" unless exists $named{$to_label};
-            push @Edges, edge( $elem->{'num'}, $named{$to_label} );
-        }
-    }        
-    # create additional arbitrary links between labeled nodes
-    #foreach my $from_num ( keys %edges ) {
-    #    foreach my $to_label ( keys %{$edges{$from_num}} ) {
-    #        die "unknown label ".$to_label."\n" unless exists $named{$to_label};
-    #        push @Edges, edge( $from_num, $named{$to_label} );
-    #    }
-    #}
-    #print Dumper(\%edges);
-    #die;
-    #print Dumper(\%named);
+
+    # add implicit nodes and add links
+    $tree = transform( $tree );
+    add_links( $tree, \%labels );
+
+    # render as list of nodes and edges
+    my @nodes;
+    my @edges;
+    render( $tree, \@nodes, \@edges );
+    #print Dumper(\@nodes);
+    #print Dumper(\@edges);
     
     close $fh;
 
     #print Dumper(\@Nodes,\@Edges);
     #die;
-    my $graphml = graphml( \@Nodes, \@Edges );
+    my $graphml = graphml( \@nodes, \@edges );
     if( open( my $fh, '>'.$graphmlfile ) ) {
         print $fh $graphml;
         close $fh;
     }
 }
 
+my $idcount = 0;
+sub mkid
+{
+    $idcount ++;
+    return 'n'.$idcount;
+}
+
+# turns list of elems into structure of BASIC flow
+# additional links between nodes added on-the-fly
+sub parse
+{
+    my( $elems ) = @_;
+
+    # add start node if not present
+    if( scalar @{$elems} && $elems->[0]->{'kind'} ne 'start' ) {
+        unshift @{$elems}, { 'kind' => 'start', 'id' => mkid(), 'title' => 'start', 'label' => '', 
+                             'links' => {}, 'line' => '', 'linenum' => -1 };
+    }
+    
+    my $tree = [];
+    my @stack = (); # stack with references into $tree
+    my $i = 0;
+    my $eoe = scalar @{$elems};
+    while( $i < $eoe )
+    {
+        my $e = $elems->[$i];
+        #print "{".$e->{'line'}."}\n";
+        if( $e->{'kind'} eq 'start' ) {
+            # new toplevel node
+            $e->{'children'} = [];
+            push @{$tree}, $e;
+            @stack = ( [ $e, $e->{'children'} ] );
+        }
+        elsif( $e->{'kind'} eq 'if' ) {
+            # new conditional node
+            $e->{'children_true'} = [];
+            $e->{'children_false'} = [];
+            push @stack, [ $e, $e->{'children_true'} ];
+        }
+        elsif( $e->{'kind'} eq 'elsend' || $e->{'kind'} eq 'end' ) {
+            # finish recent conditional node
+            push @{$stack[-2]->[1]}, $stack[-1]->[0];
+            pop @stack;
+        }
+        elsif( $e->{'kind'} eq 'else' ) {
+            # start else branch of conditional node
+            $stack[-1]->[1] = $stack[-1]->[0]->{'children_false'};
+        }
+        else { # step|noop|finish
+            push @{$stack[-1]->[1]}, $e;
+        }        
+        $i ++;
+    }    
+    return $tree;
+}
+
+sub dump_tree
+{
+    my( $tree, $ind ) = @_;
+    $ind = '' unless defined $ind;
+    
+    if( ref $tree eq 'ARRAY' ) {
+        map { dump_tree( $_, $ind ) } @{$tree};
+    }
+    else {
+        if( $tree->{'kind'} eq 'start' ) {
+            print $ind."start\n";
+            dump_tree( $tree->{'children'}, $ind.'  ' );
+        }
+        elsif( $tree->{'kind'} eq 'if' ) {
+            print $ind."if\n";
+            dump_tree( $tree->{'children_true'}, $ind.'  ' );
+            print $ind."else\n";
+            dump_tree( $tree->{'children_false'}, $ind.'  ' );
+            print $ind."end\n";
+        }
+        else {
+            print $ind.$tree->{'kind'}.': '.$tree->{'title'}."\n";        
+        }
+    }
+}
+
+# add implicit nodes and transform tree structure
+sub transform
+{
+    my( $tree ) = @_;
+    # ...
+    return $tree;
+}
+
+# recursively walk tree, initally call like  walk_tree( $tree, $coderef, $args )
+# the coderef is called this way: $coderef->( $treenode, $args, $next_sibling, $next_parent_siblings )
+sub walk_tree
+{
+    my( $tree, $coderef, $args, $next_sibling, $next_parent_siblings ) = @_;
+    $next_parent_siblings = [] unless defined $next_parent_siblings;
+    if( ref $tree eq 'ARRAY' ) {
+        for( my $i = 0; $i < scalar @{$tree}; $i++ ) {
+            $next_sibling = ( $i < scalar @{$tree} - 1 ? $tree->[$i+1] : undef );
+            walk_tree( $tree->[$i], $coderef, $args, $next_sibling, $next_parent_siblings );
+        }
+    }
+    elsif( ref $tree eq 'HASH' ) {
+        if( $tree->{'kind'} eq 'start' ) {
+            $coderef->( $tree, $args, undef, undef );
+            walk_tree( $tree->{'children'}, $coderef, $args, undef, [ undef ] );
+        }
+        elsif( $tree->{'kind'} eq 'if' ) {
+            $coderef->( $tree, $args, undef, $next_sibling );
+            my @sibs = ( @{$next_parent_siblings}, $next_sibling );
+            walk_tree( $tree->{'children_true'}, $coderef, $args, undef, \@sibs );
+            walk_tree( $tree->{'children_false'}, $coderef, $args, undef, \@sibs );
+        }
+        else { # step|noop|finish
+            $coderef->( $tree, $args, $next_sibling, $next_parent_siblings );
+        }
+    }
+    return 1;
+}
+
+sub add_links
+{
+    my( $tree, $labels ) = @_;
+    
+    # resolve links in node to the actual node ids
+    walk_tree(
+        $tree,
+        sub {
+            my( $node, $args ) = @_;
+            my( $labels ) = @{$args};
+            my %resolved;
+            foreach my $label ( keys %{$node->{'links'}} ) {
+                die "unknown label $label\n" unless exists $labels->{$label};
+                $resolved{ $labels->{$label} } = $node->{'links'}->{$label};        
+            }
+            $node->{'links'} = \%resolved;
+        },
+        [ $labels ]
+    );
+    # connect nodes for normal flow
+    walk_tree(
+        $tree,
+        sub {
+            my( $node, $args, $next_sibling, $next_parent_siblings ) = @_;
+
+            if( $node->{'kind'} eq 'start' ) {
+                # connect to first child
+                my $first = ( scalar @{$node->{'children'}} ? $node->{'children'}->[0] : undef );
+                $node->{'links'}->{ $first->{'id'} } = '' if defined $first;
+            }
+            elsif( $node->{'kind'} eq 'finish' ) {
+                # no link
+            }
+            elsif( $node->{'kind'} eq 'if' ) {
+                # connect with both true and false branch
+                my $first_true = ( scalar @{$node->{'children_true'}} ? $node->{'children_true'}->[0] : undef );
+                $node->{'links'}->{ $first_true->{'id'} } = $True if defined $first_true;
+                my $first_false = ( scalar @{$node->{'children_false'}} ? $node->{'children_false'}->[0] : undef );
+                $node->{'links'}->{ $first_false->{'id'} } = $False if defined $first_false;
+            }
+            else { # step|noop
+                if( defined $next_sibling ) {
+                    $node->{'links'}->{ $next_sibling->{'id'} } = '';
+                }
+                elsif( defined $next_parent_siblings ) {
+                    # connect to next available parent sibling
+                    foreach my $sib ( reverse @{$next_parent_siblings} ) {
+                        if( defined $sib ) {
+                            $node->{'links'}->{ $sib->{'id'} } = '';
+                            last;
+                        }
+                    }
+                }
+            }
+        },
+        [ $labels ]
+    );
+    return 1;
+}
+
+# turn deep structure into list of nodes + edges
+sub render
+{
+    my( $tree, $nodes, $edges ) = @_;
+    walk_tree(
+        $tree,
+        sub {
+            my( $node, $args ) = @_;
+            my( $nodes, $edges ) = @{$args};
+            
+            if( $node->{'kind'} eq 'start' || $node->{'kind'} eq 'finish' ) {
+                push @{$nodes}, node( $node->{'id'}, $node->{'title'}, 'ellipse' );            
+            }
+            elsif( $node->{'kind'} eq 'if' ) {
+                push @{$nodes}, node( $node->{'id'}, $node->{'title'}, 'diamond' );
+            }
+            else { # step|noop
+                push @{$nodes}, node( $node->{'id'}, $node->{'title'}, 'box' );
+            }
+            #print "NODE ".$node->{'id'}." (".$node->{'title'}.")\n";
+            
+            foreach my $link ( keys %{$node->{'links'}} ) {
+                #print "LINK ".$node->{'id'}." (".$node->{'title'}.") to $link\n";
+                push @{$edges}, edge( $node->{'id'}, $link, $node->{'links'}->{$link} );
+            }
+        },
+        [ $nodes, $edges ]
+    );
+    return 1;
+}
+
 sub parse_line
 {
-    my( $line, $node_num, $named ) = @_;
-    my $kind = 'step'; # step | if | else | elsend | end | noop | start | error | success
+    my( $line, $node_num, $labels ) = @_;
+    my $kind = 'step'; # step | if | else | elsend | end | noop | start | finish
     my $title = '';
     my $label = '';
-    my @links;
+    my %links;
     
     if( $line =~ /\#[0-9a-zA-Z\-\_]+/ ) {
         ( $label ) = $line =~ /^.*\#([0-9a-zA-Z\-\_]+).*$/;
-        $named->{$label} = $node_num;
+        $labels->{$label} = $node_num;
     }
     if( $line =~ /\-\>[\s\t]*[0-9a-zA-Z\-\_\s\t]+/ ) {
         my( $links ) = $line =~ /^.*?\-\>[\s\t]*([0-9a-zA-Z\-\_\s\t]+).*$/;
-        @links = split /[\s\t]+/, $links;
-        #map {
-        #    $edges->{$node_num} = {} unless exists $edges->{$node_num};
-        #    $edges->{$node_num}->{$_} = 1;
-        #} @links;
+        %links = map { ( $_ => '' ) } split /[\s\t]+/, $links;
     }
 
-    ( $kind ) = $line =~ /^(step|if|elsend|else|end|noop|start|error|success)/i;
+    ( $kind ) = $line =~ /^(step|if|elsend|else|end|noop|start|finish)/i;
     $kind = ( defined $kind ? lc $kind : 'step' );
     
     $title = $line;
     $title =~ s/\#[0-9a-zA-Z\-\_]+$//;
     $title =~ s/\-\>[\s\t]*[0-9a-zA-Z\-\_\s\t]+//;
-    $title =~ s/^(step|elsend|else|end|noop) //;
+    $title =~ s/^(step|elsend|else|end|noop|finish) //;
     $title =~ s/^[\s\t]*//g;
     $title =~ s/[\s\t]*$//g;
 
-    return ( $kind, $title, $label, \@links );
+    return ( $kind, $title, $label, \%links );
 }
 
 sub graphml
@@ -267,7 +350,7 @@ sub node
     return undef unless defined $num;
     $label = "Node $num" unless defined $label;
     $shape = 'box' unless defined $shape;
-    return { 'id' => 'n'.$num, 'shape' => $shape, 'label' => $label };
+    return { 'id' => $num, 'shape' => $shape, 'label' => $label };
 }
 
 sub edge
@@ -275,10 +358,9 @@ sub edge
     my( $from_num, $to_num, $label ) = @_;
     $label = '' unless defined $label;
     return undef if ! defined $from_num || ! defined $to_num;
-    return { 'from' => 'n'.$from_num, 'to' => 'n'.$to_num, 'label' => $label };
+    #print "-- LINK $from_num -> $to_num\n";
+    return { 'from' => $from_num, 'to' => $to_num, 'label' => $label };
 }
-
-
 
 
 
